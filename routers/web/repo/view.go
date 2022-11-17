@@ -28,6 +28,7 @@ import (
 	user_model "code.gitea.io/gitea/models/user"
 	"code.gitea.io/gitea/modules/base"
 	"code.gitea.io/gitea/modules/charset"
+	"code.gitea.io/gitea/modules/container"
 	"code.gitea.io/gitea/modules/context"
 	"code.gitea.io/gitea/modules/git"
 	"code.gitea.io/gitea/modules/highlight"
@@ -118,6 +119,7 @@ func renderDirectory(ctx *context.Context, treeLink string) {
 	}
 
 	if ctx.Repo.TreePath != "" {
+		ctx.Data["HideRepoInfo"] = true
 		ctx.Data["Title"] = ctx.Tr("repo.file.title", ctx.Repo.Repository.Name+"/"+path.Base(ctx.Repo.TreePath), ctx.Repo.RefName)
 	}
 
@@ -149,8 +151,8 @@ func localizedExtensions(ext, languageCode string) (localizedExts []string) {
 	if strings.Contains(lowerLangCode, "-") {
 		underscoreLangCode := strings.ReplaceAll(lowerLangCode, "-", "_")
 		indexOfDash := strings.Index(lowerLangCode, "-")
-		// e.g. [.zh-cn.md, .zh_cn.md, .zh.md, .md]
-		return []string{lowerLangCode + ext, underscoreLangCode + ext, lowerLangCode[:indexOfDash] + ext, ext}
+		// e.g. [.zh-cn.md, .zh_cn.md, .zh.md, _zh.md, .md]
+		return []string{lowerLangCode + ext, underscoreLangCode + ext, lowerLangCode[:indexOfDash] + ext, "_" + lowerLangCode[1:indexOfDash] + ext, ext}
 	}
 
 	// e.g. [.en.md, .md]
@@ -359,6 +361,7 @@ func renderReadmeFile(ctx *context.Context, readmeFile *namedBlob, readmeTreelin
 
 func renderFile(ctx *context.Context, entry *git.TreeEntry, treeLink, rawLink string) {
 	ctx.Data["IsViewFile"] = true
+	ctx.Data["HideRepoInfo"] = true
 	blob := entry.Blob()
 	dataRc, err := blob.DataAsync()
 	if err != nil {
@@ -373,6 +376,11 @@ func renderFile(ctx *context.Context, entry *git.TreeEntry, treeLink, rawLink st
 	ctx.Data["FileIsSymlink"] = entry.IsLink()
 	ctx.Data["FileName"] = blob.Name()
 	ctx.Data["RawFileLink"] = rawLink + "/" + util.PathEscapeSegments(ctx.Repo.TreePath)
+
+	if ctx.Repo.TreePath == ".editorconfig" {
+		_, editorconfigErr := ctx.Repo.GetEditorconfig(ctx.Repo.Commit)
+		ctx.Data["FileError"] = editorconfigErr
+	}
 
 	buf := make([]byte, 1024)
 	n, _ := util.ReadAtMost(dataRc, buf)
@@ -450,7 +458,7 @@ func renderFile(ctx *context.Context, entry *git.TreeEntry, treeLink, rawLink st
 			ctx.ServerError("GetTreePathLock", err)
 			return
 		}
-		ctx.Data["LFSLockOwner"] = u.DisplayName()
+		ctx.Data["LFSLockOwner"] = u.Name
 		ctx.Data["LFSLockOwnerHomeLink"] = u.HomeLink()
 		ctx.Data["LFSLockHint"] = ctx.Tr("repo.editor.this_file_locked")
 	}
@@ -543,7 +551,7 @@ func renderFile(ctx *context.Context, entry *git.TreeEntry, treeLink, rawLink st
 
 				filename2attribute2info, err := ctx.Repo.GitRepo.CheckAttribute(git.CheckAttributeOpts{
 					CachedOnly: true,
-					Attributes: []string{"linguist-language", "gitlab-language"},
+					Attributes: []git.CmdArg{"linguist-language", "gitlab-language"},
 					Filenames:  []string{ctx.Repo.TreePath},
 					IndexFile:  indexFilename,
 					WorkTree:   worktree,
@@ -722,6 +730,44 @@ func checkHomeCodeViewable(ctx *context.Context) {
 	ctx.NotFound("Home", fmt.Errorf(ctx.Tr("units.error.no_unit_allowed_repo")))
 }
 
+func checkCitationFile(ctx *context.Context, entry *git.TreeEntry) {
+	if entry.Name() != "" {
+		return
+	}
+	tree, err := ctx.Repo.Commit.SubTree(ctx.Repo.TreePath)
+	if err != nil {
+		ctx.NotFoundOrServerError("Repo.Commit.SubTree", git.IsErrNotExist, err)
+		return
+	}
+	allEntries, err := tree.ListEntries()
+	if err != nil {
+		ctx.ServerError("ListEntries", err)
+		return
+	}
+	for _, entry := range allEntries {
+		if entry.Name() == "CITATION.cff" || entry.Name() == "CITATION.bib" {
+			ctx.Data["CitiationExist"] = true
+			// Read Citation file contents
+			blob := entry.Blob()
+			dataRc, err := blob.DataAsync()
+			if err != nil {
+				ctx.ServerError("DataAsync", err)
+				return
+			}
+			defer dataRc.Close()
+			buf := make([]byte, 1024)
+			n, err := util.ReadAtMost(dataRc, buf)
+			if err != nil {
+				ctx.ServerError("ReadAtMost", err)
+				return
+			}
+			buf = buf[:n]
+			ctx.PageData["citationFileContent"] = string(buf)
+			break
+		}
+	}
+}
+
 // Home render repository home page
 func Home(ctx *context.Context) {
 	isFeed, _, showFeedType := feed.GetFeedType(ctx.Params(":reponame"), ctx.Req)
@@ -806,16 +852,14 @@ func renderDirectoryFiles(ctx *context.Context, timeout time.Duration) git.Entri
 		defer cancel()
 	}
 
-	selected := map[string]bool{}
-	for _, pth := range ctx.FormStrings("f[]") {
-		selected[pth] = true
-	}
+	selected := make(container.Set[string])
+	selected.AddMultiple(ctx.FormStrings("f[]")...)
 
 	entries := allEntries
 	if len(selected) > 0 {
 		entries = make(git.Entries, 0, len(selected))
 		for _, entry := range allEntries {
-			if selected[entry.Name()] {
+			if selected.Contains(entry.Name()) {
 				entries = append(entries, entry)
 			}
 		}
@@ -946,6 +990,13 @@ func renderCode(ctx *context.Context) {
 	if err != nil {
 		ctx.NotFoundOrServerError("Repo.Commit.GetTreeEntryByPath", git.IsErrNotExist, err)
 		return
+	}
+
+	if !ctx.Repo.Repository.IsEmpty {
+		checkCitationFile(ctx, entry)
+		if ctx.Written() {
+			return
+		}
 	}
 
 	renderLanguageStats(ctx)

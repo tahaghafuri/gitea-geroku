@@ -100,7 +100,7 @@ func AddPublicKey(ownerID int64, name, content string, authSourceID int64) (*Pub
 		return nil, err
 	}
 
-	ctx, committer, err := db.TxContext()
+	ctx, committer, err := db.TxContext(db.DefaultContext)
 	if err != nil {
 		return nil, err
 	}
@@ -130,7 +130,7 @@ func AddPublicKey(ownerID int64, name, content string, authSourceID int64) (*Pub
 		LoginSourceID: authSourceID,
 	}
 	if err = addKey(ctx, key); err != nil {
-		return nil, fmt.Errorf("addKey: %v", err)
+		return nil, fmt.Errorf("addKey: %w", err)
 	}
 
 	return key, committer.Commit()
@@ -321,7 +321,7 @@ func PublicKeyIsExternallyManaged(id int64) (bool, error) {
 // deleteKeysMarkedForDeletion returns true if ssh keys needs update
 func deleteKeysMarkedForDeletion(keys []string) (bool, error) {
 	// Start session
-	ctx, committer, err := db.TxContext()
+	ctx, committer, err := db.TxContext(db.DefaultContext)
 	if err != nil {
 		return false, err
 	}

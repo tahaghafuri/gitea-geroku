@@ -413,9 +413,9 @@ var (
 			Usage: "SMTP Authentication Type (PLAIN/LOGIN/CRAM-MD5) default PLAIN",
 		},
 		cli.StringFlag{
-			Name:  "addr",
+			Name:  "host",
 			Value: "",
-			Usage: "SMTP Addr",
+			Usage: "SMTP Host",
 		},
 		cli.IntFlag{
 			Name:  "port",
@@ -588,7 +588,7 @@ func runCreateUser(c *cli.Context) error {
 	}
 
 	if err := user_model.CreateUser(u, overwriteDefault); err != nil {
-		return fmt.Errorf("CreateUser: %v", err)
+		return fmt.Errorf("CreateUser: %w", err)
 	}
 
 	if c.Bool("access-token") {
@@ -735,7 +735,7 @@ func runRepoSyncReleases(_ *cli.Context) error {
 			Private: true,
 		})
 		if err != nil {
-			return fmt.Errorf("SearchRepositoryByName: %v", err)
+			return fmt.Errorf("SearchRepositoryByName: %w", err)
 		}
 		if len(repos) == 0 {
 			break
@@ -955,8 +955,8 @@ func parseSMTPConfig(c *cli.Context, conf *smtp.Source) error {
 		}
 		conf.Auth = c.String("auth-type")
 	}
-	if c.IsSet("addr") {
-		conf.Addr = c.String("addr")
+	if c.IsSet("host") {
+		conf.Host = c.String("host")
 	}
 	if c.IsSet("port") {
 		conf.Port = c.Int("port")
